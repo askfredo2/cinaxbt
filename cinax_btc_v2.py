@@ -463,7 +463,7 @@ def main():
             señal = prob >= umbral
 
             if señal:
-                # Verificar anti-racha
+                # Único filtro: anti-racha (fiel al backtest)
                 n_sl_recientes = contar_sl_recientes(VENTANA_RACHA)
                 if n_sl_recientes >= SL_RACHA_MAX:
                     log(
@@ -471,15 +471,7 @@ def main():
                         "WARN"
                     )
                     discord_bloqueado_racha(fecha_barra, n_sl_recientes, VENTANA_RACHA)
-                    señal = False  # No abrir
-
-                # Verificar que no haya posición abierta (1 a la vez)
-                elif os.path.exists(POSICIONES_CSV):
-                    df_pos   = pd.read_csv(POSICIONES_CSV)
-                    n_abiert = len(df_pos[df_pos["estado"] == "ABIERTA"])
-                    if n_abiert > 0:
-                        log(f"Ya hay {n_abiert} posición(es) abierta(s) — señal omitida")
-                        señal = False
+                    señal = False
 
             if señal:
                 log(f"★ SEÑAL LARGA ★ — BTC: {precio:,.2f} | prob: {prob:.4f}", "SEÑAL")
