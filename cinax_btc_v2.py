@@ -266,6 +266,14 @@ def abrir_posicion(fecha_barra, precio_entrada, prob, umbral, meta):
     )
 
 
+def _normalizar_ts(ts):
+    """Convierte cualquier timestamp a naive (sin timezone)."""
+    t = pd.Timestamp(ts)
+    if t.tzinfo is not None:
+        t = t.tz_localize(None)
+    return t
+
+
 def verificar_posiciones_abiertas(df_raw, meta):
     """
     Revisa si alguna posición abierta tocó TP, SL o venció por tiempo.
@@ -280,20 +288,30 @@ def verificar_posiciones_abiertas(df_raw, meta):
     if abiertas.empty:
         return []
 
+    # ── FIX: normalizar índice de df_raw a naive (sin timezone) ──
+    df_raw = df_raw.copy()
+    if hasattr(df_raw.index, 'tz') and df_raw.index.tz is not None:
+        df_raw.index = df_raw.index.tz_localize(None)
+
     cerradas_ahora = []
-    ultima_vela    = df_raw.index[-1]
-    ultima_close   = float(df_raw["close"].iloc[-1])
 
     for idx_pos, pos in abiertas.iterrows():
         tp_price    = float(pos["tp_price"])
         sl_price    = float(pos["sl_price"])
-        exit_max    = pos["exit_max_date"]
-        entry_date  = pos["entry_date"]
         entry_price = float(pos["entry_price"])
 
-        # Velas posteriores a la entrada
+        # ── FIX: normalizar fechas del CSV a naive ──
+        entry_date = _normalizar_ts(pos["entry_date"])
+        exit_max   = _normalizar_ts(pos["exit_max_date"])
+
         velas_post = df_raw[df_raw.index > entry_date].copy()
+
         if velas_post.empty:
+            log(
+                f"⚠ Sin velas post entry {entry_date} | "
+                f"df_raw va de {df_raw.index[0]} a {df_raw.index[-1]}",
+                "WARN"
+            )
             continue
 
         motivo      = None
@@ -322,7 +340,10 @@ def verificar_posiciones_abiertas(df_raw, meta):
                 break
 
         if motivo is None:
-            # Posición aún viva
+            log(
+                f"Posición {entry_date} aún viva | "
+                f"exit_max={exit_max} | última vela={df_raw.index[-1]}"
+            )
             continue
 
         retorno = precio_exit / entry_price - 1
