@@ -40,6 +40,19 @@ SEÑALES_CSV     = f"{DATA_DIR}/cinax_btc_señales.csv"
 POSICIONES_CSV  = f"{DATA_DIR}/cinax_btc_posiciones.csv"
 INTRA_CSV       = f"{DATA_DIR}/cinax_btc_intra.csv"
 
+# dtypes explícitos para leer POSICIONES_CSV sin problemas de inferencia
+POSICIONES_DTYPE = {
+    "entry_price":    float,
+    "tp_price":       float,
+    "sl_price":       float,
+    "exit_price":     str,
+    "retorno":        str,
+    "motivo_salida":  str,
+    "prob":           float,
+    "umbral":         float,
+    "estado":         str,
+}
+
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # ══════════════════════════════════════════════════════════════
@@ -107,7 +120,7 @@ def discord_cierre_posicion(pos, precio_cierre, retorno, motivo):
 def discord_seguimiento(fecha_barra, precio_actual):
     if not os.path.exists(POSICIONES_CSV):
         return
-    df_pos   = pd.read_csv(POSICIONES_CSV)
+    df_pos   = _leer_posiciones()
     abiertas = df_pos[df_pos["estado"] == "ABIERTA"]
     if abiertas.empty:
         return
@@ -140,12 +153,12 @@ def discord_bloqueado_racha(fecha_barra, n_sl, ventana_h):
 def _bloque_acumulado():
     if not os.path.exists(POSICIONES_CSV):
         return ""
-    df_all   = pd.read_csv(POSICIONES_CSV)
+    df_all   = _leer_posiciones()
     cerradas = df_all[df_all["estado"] == "CERRADA"]
     abiertas = df_all[df_all["estado"] == "ABIERTA"]
     if len(cerradas) == 0:
         return ""
-    rets = cerradas["retorno"].astype(float)
+    rets = pd.to_numeric(cerradas["retorno"], errors="coerce").dropna()
     wr   = (rets > 0).mean()
     pf   = rets[rets > 0].sum() / (abs(rets[rets < 0].sum()) + 1e-8)
     return (
@@ -156,6 +169,18 @@ def _bloque_acumulado():
         f"Retorno acum  : {rets.sum()*100:+.1f}%\n"
         f"Abiertas ahora: {len(abiertas)}\n"
         f"```"
+    )
+
+# ══════════════════════════════════════════════════════════════
+# HELPERS CSV
+# ══════════════════════════════════════════════════════════════
+
+def _leer_posiciones():
+    """Lee POSICIONES_CSV con dtypes seguros para evitar errores de tipo."""
+    return pd.read_csv(
+        POSICIONES_CSV,
+        parse_dates=["entry_date", "exit_max_date"],
+        dtype=POSICIONES_DTYPE,
     )
 
 # ══════════════════════════════════════════════════════════════
@@ -255,9 +280,12 @@ def abrir_posicion(fecha_barra, precio_entrada, prob, umbral, meta):
         if nuevo:
             f.write("entry_date,entry_price,tp_price,sl_price,exit_max_date,"
                     "exit_price,retorno,motivo_salida,prob,umbral,estado\n")
+        # FIX: usar "PENDIENTE" como placeholder en campos de salida
+        # para que pandas infiera la columna motivo_salida como string (object)
+        # y no como float64 (lo que ocurría cuando los campos quedaban vacíos)
         f.write(
             f"{fecha_barra},{precio_entrada:.2f},{tp_price:.2f},{sl_price:.2f},"
-            f"{exit_max},,,,{prob:.4f},{umbral:.4f},ABIERTA\n"
+            f"{exit_max},,,PENDIENTE,{prob:.4f},{umbral:.4f},ABIERTA\n"
         )
     log(
         f"Posición abierta | entry={fecha_barra} | precio={precio_entrada:.2f} | "
@@ -283,12 +311,15 @@ def verificar_posiciones_abiertas(df_raw, meta):
     if not os.path.exists(POSICIONES_CSV):
         return []
 
-    df_pos   = pd.read_csv(POSICIONES_CSV, parse_dates=["entry_date", "exit_max_date"])
+    # FIX: leer con dtypes explícitos para que motivo_salida/exit_price/retorno
+    # sean siempre string (object) y no float64, evitando TypeError al asignarles
+    # valores como "TP 🎯" o "SL 🛑"
+    df_pos   = _leer_posiciones()
     abiertas = df_pos[df_pos["estado"] == "ABIERTA"]
     if abiertas.empty:
         return []
 
-    # ── FIX: normalizar índice de df_raw a naive (sin timezone) ──
+    # Normalizar índice de df_raw a naive (sin timezone)
     df_raw = df_raw.copy()
     if hasattr(df_raw.index, 'tz') and df_raw.index.tz is not None:
         df_raw.index = df_raw.index.tz_localize(None)
@@ -300,7 +331,7 @@ def verificar_posiciones_abiertas(df_raw, meta):
         sl_price    = float(pos["sl_price"])
         entry_price = float(pos["entry_price"])
 
-        # ── FIX: normalizar fechas del CSV a naive ──
+        # Normalizar fechas del CSV a naive
         entry_date = _normalizar_ts(pos["entry_date"])
         exit_max   = _normalizar_ts(pos["exit_max_date"])
 
@@ -347,10 +378,12 @@ def verificar_posiciones_abiertas(df_raw, meta):
             continue
 
         retorno = precio_exit / entry_price - 1
-        df_pos.at[idx_pos, "exit_price"]     = round(precio_exit, 2)
-        df_pos.at[idx_pos, "retorno"]        = round(retorno, 6)
-        df_pos.at[idx_pos, "motivo_salida"]  = motivo
-        df_pos.at[idx_pos, "estado"]         = "CERRADA"
+
+        # FIX: asignar directamente sobre el DataFrame ya tipado como object
+        df_pos.at[idx_pos, "exit_price"]    = str(round(precio_exit, 2))
+        df_pos.at[idx_pos, "retorno"]       = str(round(retorno, 6))
+        df_pos.at[idx_pos, "motivo_salida"] = motivo
+        df_pos.at[idx_pos, "estado"]        = "CERRADA"
         cerradas_ahora.append(df_pos.loc[idx_pos].to_dict())
 
         log(
@@ -368,7 +401,7 @@ def contar_sl_recientes(ventana_horas=VENTANA_RACHA):
     """Cuenta SL en la ventana de anti-racha."""
     if not os.path.exists(POSICIONES_CSV):
         return 0
-    df_pos   = pd.read_csv(POSICIONES_CSV)
+    df_pos   = _leer_posiciones()
     cerradas = df_pos[df_pos["estado"] == "CERRADA"].copy()
     if cerradas.empty:
         return 0
@@ -381,13 +414,13 @@ def contar_sl_recientes(ventana_horas=VENTANA_RACHA):
 def resumen_log():
     if not os.path.exists(POSICIONES_CSV):
         return
-    df_pos   = pd.read_csv(POSICIONES_CSV)
+    df_pos   = _leer_posiciones()
     cerradas = df_pos[df_pos["estado"] == "CERRADA"]
     abiertas = df_pos[df_pos["estado"] == "ABIERTA"]
     if cerradas.empty:
         log(f"Sin posiciones cerradas aún | Abiertas: {len(abiertas)}")
         return
-    rets = cerradas["retorno"].astype(float)
+    rets = pd.to_numeric(cerradas["retorno"], errors="coerce").dropna()
     wr   = (rets > 0).mean()
     pf   = rets[rets > 0].sum() / (abs(rets[rets < 0].sum()) + 1e-8)
     log(
@@ -510,7 +543,7 @@ def main():
 
             # Seguimiento cada 8 horas si hay posición abierta
             if os.path.exists(POSICIONES_CSV):
-                df_pos = pd.read_csv(POSICIONES_CSV)
+                df_pos = _leer_posiciones()
                 if len(df_pos[df_pos["estado"] == "ABIERTA"]) > 0:
                     if ahora.hour % 8 == 0:
                         discord_seguimiento(fecha_barra, precio)
