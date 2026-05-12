@@ -31,7 +31,7 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
 ACTIVO          = "BTC-USD"
 WINDOW_PCT      = 168          # ventana percentil en horas (debe coincidir con entrenamiento)
 CHECK_MINS      = 60           # revisar cada 60 minutos
-SL_RACHA_MAX    = 2            # SLs consecutivos para activar bloqueo
+SL_RACHA_MAX    = 1            # SLs consecutivos para activar bloqueo
 VENTANA_RACHA   = 12           # ventana anti-racha en horas
 
 DATA_DIR        = "/data"
