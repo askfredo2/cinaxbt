@@ -398,15 +398,17 @@ def verificar_posiciones_abiertas(df_raw, meta):
 
 
 def contar_sl_recientes(ventana_horas=VENTANA_RACHA):
-    """Cuenta SL en la ventana de anti-racha."""
+    """Cuenta SL en la ventana de anti-racha.
+    Usa UTC en ambos lados para evitar desfase si Railway no corre en UTC."""
     if not os.path.exists(POSICIONES_CSV):
         return 0
     df_pos   = _leer_posiciones()
     cerradas = df_pos[df_pos["estado"] == "CERRADA"].copy()
     if cerradas.empty:
         return 0
-    cerradas["entry_date"] = pd.to_datetime(cerradas["entry_date"])
-    limite = datetime.now() - pd.Timedelta(hours=ventana_horas)
+    # entry_date guardado como naive UTC — normalizamos a UTC para comparar
+    cerradas["entry_date"] = pd.to_datetime(cerradas["entry_date"], utc=False)
+    limite = pd.Timestamp.utcnow().tz_localize(None) - pd.Timedelta(hours=ventana_horas)
     recientes = cerradas[cerradas["entry_date"] >= limite]
     return int((recientes["motivo_salida"] == "SL 🛑").sum())
 
